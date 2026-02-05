@@ -1,4 +1,4 @@
-// diary.js - Optimized for Shared Diary
+// diary.js - Fixed version with future date and image save issues
 class DiaryManager {
     constructor() {
         this.currentDate = new Date();
@@ -7,7 +7,7 @@ class DiaryManager {
         this.diaryEntries = {};
         this.isLoading = false;
         this.diaryRef = null;
-        this.currentImages = [];
+        this.currentImages = []; // Array to store image data
         this.viewMode = 'all';
         
         this.init();
@@ -229,14 +229,31 @@ class DiaryManager {
         document.getElementById('prev-month-btn')?.addEventListener('click', () => this.previousMonth());
         document.getElementById('next-month-btn')?.addEventListener('click', () => this.nextMonth());
         
-        // Date selection
+        // Date selection - FIXED: Check if it's a future date on click
         this.calendarDays?.addEventListener('click', (e) => {
-            const dayEl = e.target.closest('.calendar-day:not(.empty-day):not(.disabled-day)');
-            if (dayEl) {
-                const day = parseInt(dayEl.textContent);
-                const date = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth(), day);
-                this.selectDate(date);
+            const dayEl = e.target.closest('.calendar-day:not(.empty-day)');
+            if (!dayEl) return;
+            
+            // Don't allow clicking on disabled (future) days
+            if (dayEl.classList.contains('disabled-day')) {
+                showNotification('Không thể chọn ngày trong tương lai!', 'error');
+                return;
             }
+            
+            const day = parseInt(dayEl.textContent);
+            const date = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth(), day);
+            
+            // Double-check if it's a future date
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            date.setHours(0, 0, 0, 0);
+            
+            if (date > today) {
+                showNotification('Không thể viết nhật ký cho ngày tương lai!', 'error');
+                return;
+            }
+            
+            this.selectDate(date);
         });
         
         // View mode
@@ -306,7 +323,12 @@ class DiaryManager {
         document.body.style.overflow = 'hidden';
         
         this.renderCalendar();
-        this.selectDate(new Date());
+        
+        // Select today's date, but check if it's a future date first
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        this.selectDate(today);
+        
         this.loadDiaryEntries();
         this.updateStats();
     }
@@ -356,16 +378,24 @@ class DiaryManager {
         
         for (let day = 1; day <= totalDays; day++) {
             const dayDate = new Date(year, month, day);
+            dayDate.setHours(0, 0, 0, 0);
+            
             const dayElement = document.createElement('div');
             dayElement.className = 'calendar-day';
             dayElement.textContent = day;
             
-            // Today
-            if (dayDate.toDateString() === today.toDateString()) {
+            // Check if it's today
+            if (dayDate.getTime() === today.getTime()) {
                 dayElement.classList.add('today');
             }
             
-            // Has entry
+            // Check if it's a future date
+            if (dayDate > today) {
+                dayElement.classList.add('disabled-day');
+                dayElement.title = 'Ngày trong tương lai';
+            }
+            
+            // Check if it has an entry
             const dateKey = this.formatDateKey(dayDate);
             const entry = this.diaryEntries[dateKey];
             if (entry) {
@@ -376,15 +406,22 @@ class DiaryManager {
                 indicator.className = 'calendar-day-indicator';
                 indicator.style.backgroundColor = this.isMyEntry(entry) ? 'var(--love-red)' : 'var(--love-pink)';
                 dayElement.appendChild(indicator);
+                
+                // Add tooltip
+                const author = entry.userName || 'Ai đó';
+                const imageCount = entry.images ? entry.images.length : 0;
+                let tooltip = `Đã viết bởi: ${author}`;
+                if (imageCount > 0) {
+                    tooltip += `\nCó ${imageCount} ảnh`;
+                }
+                dayElement.title = tooltip;
             }
             
-            // Disable future dates
-            if (dayDate > today) {
-                dayElement.classList.add('disabled-day');
-            }
+            // Check if it's selected
+            const selectedDate = new Date(this.selectedDate);
+            selectedDate.setHours(0, 0, 0, 0);
             
-            // Selected date
-            if (dayDate.toDateString() === this.selectedDate.toDateString()) {
+            if (dayDate.getTime() === selectedDate.getTime()) {
                 dayElement.classList.add('selected');
             }
             
@@ -395,8 +432,8 @@ class DiaryManager {
         const nextMonthBtn = document.getElementById('next-month-btn');
         if (nextMonthBtn) {
             const nextMonth = new Date(year, month + 1, 1);
-            const firstDayNextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-            nextMonthBtn.disabled = nextMonth > firstDayNextMonth;
+            nextMonth.setHours(0, 0, 0, 0);
+            nextMonthBtn.disabled = nextMonth > today;
         }
     }
     
@@ -411,26 +448,27 @@ class DiaryManager {
     }
     
     selectDate(date) {
+        // Create a new date object to avoid reference issues
+        const selectedDate = new Date(date);
+        selectedDate.setHours(0, 0, 0, 0);
+        
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         
-        if (date > today) {
-            showNotification('Không thể viết nhật ký cho ngày tương lai!', 'error');
-            return;
-        }
-        
-        this.selectedDate = date;
+        // FIXED: Only check if it's a future date when trying to write
+        // But allow selecting any date to view
+        this.selectedDate = selectedDate;
         
         // Update display
         if (this.selectedDateDisplay) {
-            this.selectedDateDisplay.textContent = this.formatDateDisplay(date);
+            this.selectedDateDisplay.textContent = this.formatDateDisplay(selectedDate);
         }
         
         // Update calendar
         this.renderCalendar();
         
         // Load entry
-        this.loadEntryForDate(date);
+        this.loadEntryForDate(selectedDate);
         
         // Update save button
         this.updateSaveButtonState();
@@ -445,7 +483,27 @@ class DiaryManager {
             this.selectedEntry = entry;
             this.diaryTitleInput.value = entry.title || '';
             this.diaryContentInput.value = entry.content || '';
-            this.currentImages = entry.images || [];
+            
+            // Load images - FIXED: Handle both string URLs and object format
+            this.currentImages = [];
+            if (entry.images && Array.isArray(entry.images)) {
+                entry.images.forEach((img, index) => {
+                    if (typeof img === 'string') {
+                        // It's a base64 string or URL
+                        this.currentImages.push({
+                            dataUrl: img,
+                            name: `image_${index + 1}`,
+                            isFromStorage: true
+                        });
+                    } else if (img.dataUrl) {
+                        // It's an object with dataUrl
+                        this.currentImages.push({
+                            ...img,
+                            isFromStorage: true
+                        });
+                    }
+                });
+            }
             
             // Update delete button
             if (this.diaryDeleteBtn) {
@@ -521,7 +579,10 @@ class DiaryManager {
                 this.currentImages.push({
                     file: file,
                     dataUrl: e.target.result,
-                    name: file.name
+                    name: file.name,
+                    type: file.type,
+                    size: file.size,
+                    isFromStorage: false
                 });
                 
                 this.renderImagePreviews();
@@ -575,6 +636,17 @@ class DiaryManager {
             return;
         }
         
+        // Check if it's a future date before saving
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const selectedDate = new Date(this.selectedDate);
+        selectedDate.setHours(0, 0, 0, 0);
+        
+        if (selectedDate > today) {
+            showNotification('Không thể lưu nhật ký cho ngày tương lai!', 'error');
+            return;
+        }
+        
         const dateKey = this.formatDateKey(this.selectedDate);
         const title = this.diaryTitleInput?.value.trim() || '';
         const content = this.diaryContentInput?.value.trim() || '';
@@ -588,6 +660,26 @@ class DiaryManager {
         this.showLoading('Đang lưu nhật ký...');
         
         try {
+            // FIXED: Process images to ensure they're in the correct format for Firebase
+            const processedImages = this.currentImages.map(img => {
+                // If it's already a base64 string from storage, keep it
+                if (img.isFromStorage && typeof img.dataUrl === 'string') {
+                    return img.dataUrl;
+                }
+                // If it's a new image with dataUrl, use it
+                else if (img.dataUrl && typeof img.dataUrl === 'string') {
+                    // Ensure it's a proper base64 string
+                    if (img.dataUrl.startsWith('data:')) {
+                        return img.dataUrl;
+                    } else {
+                        // If it's not base64, convert it
+                        return `data:${img.type || 'image/jpeg'};base64,${btoa(img.dataUrl)}`;
+                    }
+                }
+                // Fallback
+                return img.dataUrl || '';
+            }).filter(img => img); // Remove any empty strings
+            
             // Prepare entry data
             const diaryEntry = {
                 id: dateKey,
@@ -595,7 +687,7 @@ class DiaryManager {
                 dateKey: dateKey,
                 title: title,
                 content: content,
-                images: this.currentImages.map(img => img.dataUrl),
+                images: processedImages, // FIXED: Use processed images
                 userId: window.currentUser.id,
                 userName: window.currentUser.name,
                 userAvatar: window.currentUser.avatar,
@@ -603,6 +695,12 @@ class DiaryManager {
                 updatedAt: new Date().toISOString(),
                 updatedBy: window.currentUser.name
             };
+            
+            console.log('Saving diary entry:', {
+                dateKey,
+                hasImages: processedImages.length,
+                imageFormat: processedImages.length > 0 ? typeof processedImages[0] : 'none'
+            });
             
             // Save to Firebase
             if (this.diaryRef) {
@@ -681,10 +779,17 @@ class DiaryManager {
         try {
             if (this.diaryRef) {
                 this.diaryRef.on('value', (snapshot) => {
-                    this.diaryEntries = snapshot.val() || {};
+                    const data = snapshot.val();
+                    this.diaryEntries = data || {};
+                    
+                    console.log('Loaded diary entries:', Object.keys(this.diaryEntries).length);
+                    
                     this.renderCalendar();
                     this.loadDiaryEntriesList();
                     this.updateStats();
+                    this.isLoading = false;
+                }, (error) => {
+                    console.error('Error loading diary entries:', error);
                     this.isLoading = false;
                 });
             }
@@ -726,7 +831,15 @@ class DiaryManager {
             const date = new Date(entry.date);
             const isSelected = this.selectedEntry?.id === entry.id;
             const isMine = this.isMyEntry(entry);
-            const hasImages = entry.images?.length > 0;
+            const hasImages = entry.images && entry.images.length > 0;
+            
+            // Format preview text
+            let preview = 'Không có nội dung';
+            if (entry.content) {
+                preview = entry.content.length > 100 
+                    ? entry.content.substring(0, 100) + '...' 
+                    : entry.content;
+            }
             
             return `
                 <div class="diary-entry-item ${isSelected ? 'selected' : ''}" data-id="${entry.id}">
@@ -748,9 +861,9 @@ class DiaryManager {
                         ${entry.title || 'Nhật ký không tiêu đề'}
                     </div>
                     <div class="diary-entry-preview">
-                        ${entry.content ? (entry.content.length > 100 ? entry.content.substring(0, 100) + '...' : entry.content) : 'Không có nội dung'}
+                        ${preview}
                     </div>
-                    <div class="entry-footer">
+                    <div style="margin-top: 10px; font-size: 0.8rem; color: var(--text-light); display: flex; justify-content: space-between;">
                         <div>
                             <i class="far fa-clock"></i> ${new Date(entry.updatedAt).toLocaleTimeString('vi-VN', {hour: '2-digit', minute:'2-digit'})}
                         </div>
@@ -802,21 +915,25 @@ class DiaryManager {
         this.diaryDeleteBtn.innerHTML = '<i class="fas fa-trash"></i> Xóa nhật ký';
         
         // Select today
-        this.selectDate(new Date());
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        this.selectDate(today);
     }
     
     formatDateKey(date) {
-        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        const d = new Date(date);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }
     
     formatDateDisplay(date) {
-        return date.toLocaleDateString('vi-VN', {
+        const d = new Date(date);
+        return d.toLocaleDateString('vi-VN', {
             weekday: 'long',
             year: 'numeric',
             month: 'long',
             day: 'numeric'
         }).charAt(0).toUpperCase() + 
-        date.toLocaleDateString('vi-VN', {
+        d.toLocaleDateString('vi-VN', {
             weekday: 'long',
             year: 'numeric',
             month: 'long',
@@ -854,3 +971,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }, 1000);
 });
+
+// Helper function for notifications (if not defined elsewhere)
+if (typeof showNotification !== 'function') {
+    function showNotification(message, type = 'info') {
+        console.log(`[${type.toUpperCase()}] ${message}`);
+        // You can implement a proper notification system here
+        alert(message);
+    }
+}
